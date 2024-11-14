@@ -8,6 +8,7 @@ import warnings
 from sklearn.preprocessing import StandardScaler
 from sklearn.preprocessing import LabelEncoder
 import pandas as pd
+import os
 warnings.filterwarnings('ignore')
 
 def calculateAngle(landmark1, landmark2, landmark3):
@@ -56,10 +57,10 @@ def predict_yoga_pose(angles, model, ideal_angles):
     confidence = prediction[0][predicted_class_index]
     
     # Compare angles to ideal angles
-    adjust_angle = np.vectorize(lambda x: x if x <= 180 else 180 - x)
-    input_data = adjust_angle(input_data)
+    #adjust_angle = np.vectorize(lambda x: x if x <= 180 else 180 - x)
+    #input_data = adjust_angle(input_data)
     angle_differences = input_data - ideal_angles.loc[predicted_class].values
-    angle_differences = adjust_angle(angle_differences)
+    #angle_differences = adjust_angle(angle_differences)
     
     return predicted_class, confidence, angle_differences
 
@@ -73,6 +74,11 @@ loaded_model = tf.keras.models.load_model('yoga_pose_model.keras')
 scaler = joblib.load('yoga_pose_scaler.joblib')
 le = joblib.load('yoga_pose_label_encoder.joblib')
 ideal_angles = pd.read_csv('ideal_angles.csv', index_col='Label')
+
+# Load ideal images
+ideal_image_folder = 'ideal_images'
+ideal_images = {pose_name: cv2.imread(os.path.join(ideal_image_folder, f"{pose_name}.jpg"))
+                for pose_name in ideal_angles.index}
 
 # Open webcam
 cap = cv2.VideoCapture(0)
@@ -116,6 +122,9 @@ angle_names = {
     11: "right_wrist_angle_bk"
 }
 
+max_angle_variance = 18  # Maximum allowed variance from ideal angle
+min_classification_confidence = 0.65  # Minimum required classification confidence
+
 while cap.isOpened():
     success, image = cap.read()
     if not success:
@@ -148,8 +157,26 @@ while cap.isOpened():
                 last_predicted_pose = predicted_pose
                 last_confidence = confidence
                 last_angle_differences = angle_differences
-                last_angle_differences = sorted(last_angle_differences, key=abs, reverse=True)
-                print(last_angle_differences[0],last_predicted_pose)
+
+                # Check angles against the maximum allowed variance
+                feedback = []
+                if confidence >= min_classification_confidence:
+                    for i, angle_diff in enumerate(angle_differences[0]):
+                        if abs(angle_diff) > max_angle_variance:
+                            angle_name = angle_names.get(i, f"Angle {i}")
+                            if angle_name in ["left_wrist_angle_bk", "right_wrist_angle_bk"] and last_predicted_pose != "BaddhaKonasana":
+                                continue  # Skip these angles unless the pose is BaddhaKonasana
+                            if angle_name == "neck_angle_uk" and last_predicted_pose != "UtkataKonasana":
+                                continue  # Skip this angle unless the pose is UtkataKonasana
+                            
+                            if angle_diff < 0:
+                                feedback.append(f"Decrease angle of {angle_name} by {abs(angle_diff):.2f} degrees")
+                            else:
+                                feedback.append(f"Increase angle of {angle_name} by {abs(angle_diff):.2f} degrees")
+                else:
+                    last_predicted_pose = "No pose detected"
+                    last_confidence = 0.0
+                    last_angle_differences = None
             else:
                 last_predicted_pose = "Body not fully visible"
                 last_confidence = 0.0
@@ -162,27 +189,17 @@ while cap.isOpened():
         text = f"Pose: {last_predicted_pose} | Confidence: {last_confidence:.2f}"
         cv2.putText(image, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
-        if last_angle_differences is not None:
-            # Get the indices of the top 3 problematic angles by absolute magnitude
-            problematic_indices = np.argsort(np.abs(last_angle_differences[0]))[::-1] # Get indices of the top 3 angles
-            text_lines = ["Problematic Angles:"]  # Use a list to store each line
-
-            for i in problematic_indices:
-                angle_name = angle_names.get(i, f"Angle {i}")
-
-                # Show specific angles only in their respective poses
-                if (angle_name in ["left_wrist_angle_bk", "right_wrist_angle_bk"] and last_predicted_pose != "BaddhaKonasana"):
-                    continue  # Skip these angles unless the pose is BaddhaKonasana
-                if (angle_name == "neck_angle_uk" and last_predicted_pose != "UtkataKonasana"):
-                    continue  # Skip this angle unless the pose is UtkataKonasana
-                
-                # Append the angle name and its difference to the list
-                text_lines.append(f"{angle_name} ({last_angle_differences[0][i]:.2f})")
-            
-            # Render each line of text on the image
-            for idx, line in enumerate(text_lines):
+        if last_angle_differences is not None and last_confidence >= min_classification_confidence:
+            for idx, line in enumerate(feedback):
                 cv2.putText(image, line, (10, 60 + idx * 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)  # Increment the Y position for each line
+        elif last_confidence < min_classification_confidence:
+            cv2.putText(image, "No pose detected", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
+        # Display the ideal image for the detected pose
+        if last_predicted_pose in ideal_images:
+            ideal_image = ideal_images[last_predicted_pose]
+            ideal_image = cv2.resize(ideal_image, (200, 150))
+            image[image.shape[0] - ideal_image.shape[0] - 10:image.shape[0] - 10, image.shape[1] - ideal_image.shape[1] - 10:image.shape[1] - 10] = ideal_image
 
     # Display the image
     cv2.imshow('Yoga Pose Prediction', image)
