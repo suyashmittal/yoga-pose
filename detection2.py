@@ -56,11 +56,7 @@ def predict_yoga_pose(angles, model, ideal_angles):
     predicted_class = le.inverse_transform([predicted_class_index])[0]
     confidence = prediction[0][predicted_class_index]
     
-    # Compare angles to ideal angles
-    #adjust_angle = np.vectorize(lambda x: x if x <= 180 else 180 - x)
-    #input_data = adjust_angle(input_data)
     angle_differences = input_data - ideal_angles.loc[predicted_class].values
-    #angle_differences = adjust_angle(angle_differences)
     
     return predicted_class, confidence, angle_differences
 
@@ -82,8 +78,14 @@ ideal_images = {pose_name: cv2.imread(os.path.join(ideal_image_folder, f"{pose_n
 
 # Open webcam
 cap = cv2.VideoCapture(0)
+
+# Modified window creation with split screen layout
+screen_width, screen_height = 1920, 1080  # Adjust if needed to match your screen resolution
+video_width = screen_width // 2
+video_height = screen_height
 cv2.namedWindow('Yoga Pose Prediction', cv2.WINDOW_NORMAL)
-cv2.resizeWindow('Yoga Pose Prediction', 1080, 720)
+cv2.resizeWindow('Yoga Pose Prediction', screen_width, screen_height)
+
 # Set the interval for processing frames (e.g., every 1 second)
 process_interval = .5 # in seconds
 last_process_time = time.time()
@@ -137,10 +139,16 @@ while cap.isOpened():
     # Process the image and get the pose landmarks
     results = pose.process(image_rgb)
 
-    # Draw the pose landmarks on the image
+    # Create a larger canvas to hold both the video and information
+    display_frame = np.zeros((screen_height, screen_width, 3), dtype=np.uint8)
+
+    # Resize the input image to take up half the screen
+    image_resized = cv2.resize(image, (video_width, video_height))
+
+    # Draw the pose landmarks on the resized image
     if results.pose_landmarks:
         mp_drawing.draw_landmarks(
-            image, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+            image_resized, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
 
         # Check if it's time to process a frame
         current_time = time.time()
@@ -184,25 +192,37 @@ while cap.isOpened():
 
             last_process_time = current_time
 
-    # Display the last predicted pose, confidence, and problematic angles
-    if last_predicted_pose:
-        text = f"Pose: {last_predicted_pose} | Confidence: {last_confidence:.2f}"
-        cv2.putText(image, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+    # Place the video feed on the left half of the screen
+    display_frame[:, :video_width] = image_resized
 
+    # Display the last predicted pose, confidence, and problematic angles on the right side
+    if last_predicted_pose:
+        # Pose and Confidence Text
+        text = f"Pose: {last_predicted_pose}"
+        cv2.putText(display_frame, text, (video_width + 10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        
+        confidence_text = f"Confidence: {last_confidence:.2f}"
+        cv2.putText(display_frame, confidence_text, (video_width + 10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+        # Display Feedback
         if last_angle_differences is not None and last_confidence >= min_classification_confidence:
             for idx, line in enumerate(feedback):
-                cv2.putText(image, line, (10, 60 + idx * 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)  # Increment the Y position for each line
+                cv2.putText(display_frame, line, (video_width + 10, 90 + idx * 20), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
         elif last_confidence < min_classification_confidence:
-            cv2.putText(image, "No pose detected", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            cv2.putText(display_frame, "No pose detected", (video_width + 10, 90), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
         # Display the ideal image for the detected pose
         if last_predicted_pose in ideal_images:
             ideal_image = ideal_images[last_predicted_pose]
-            ideal_image = cv2.resize(ideal_image, (200, 150))
-            image[image.shape[0] - ideal_image.shape[0] - 10:image.shape[0] - 10, image.shape[1] - ideal_image.shape[1] - 10:image.shape[1] - 10] = ideal_image
+            ideal_image_resized = cv2.resize(ideal_image, (video_width, video_height // 2))
+            
+            # Place ideal image in the bottom right quadrant
+            display_frame[video_height//2:, video_width:] = ideal_image_resized
 
-    # Display the image
-    cv2.imshow('Yoga Pose Prediction', image)
+    # Display the final combined frame
+    cv2.imshow('Yoga Pose Prediction', display_frame)
 
     # Exit the loop when 'q' is pressed
     if cv2.waitKey(5) & 0xFF == ord('q'):
